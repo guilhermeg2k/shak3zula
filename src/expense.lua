@@ -1,4 +1,4 @@
-local DB = require('db')
+local DB = require('src.db')
 local Expense = {}
 
 function Expense.insert(name, value, category_id, date, repeat_amount)

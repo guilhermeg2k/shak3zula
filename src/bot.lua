@@ -1,8 +1,8 @@
-local bot_key = os.getenv('BOT_API')
-local bot_api = require('telegram-bot-lua.core').configure(bot_key)
-local util = require('util')
-local pprint = require('pprint')
-local Expense = require('expense')
+local BOT_TOKEN = os.getenv('BOT_TOKEN')
+local bot_api = require('telegram-bot-lua.core').configure(BOT_TOKEN)
+local util = require('src.util')
+local pprint = require('lib.pprint')
+local Expense = require('src.expense')
 
 local Bot = {}
 
