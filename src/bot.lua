@@ -1,20 +1,34 @@
 local BOT_TOKEN = os.getenv('BOT_TOKEN')
-local bot_api = require('telegram-bot-lua.core').configure(BOT_TOKEN)
+local CHAT_ID = os.getenv('CHAT_ID')
+assert(CHAT_ID ~= nil, 'CHAT_ID must be defined')
+
+local bot_api = require('lib.telegram-bot-lua.core').configure(BOT_TOKEN)
 local util = require('src.util')
 local pprint = require('lib.pprint')
+
 local Expense = require('src.expense.expense')
 local ExpenseCategory = require('src.expense.expense_category')
 local ExpenseGroup = require('src.expense.expense_group')
+local HLTV = require('src.hltv.hltv')
 
 local Bot = {}
 
 function Bot.init()
+  Bot.defineHandlers()
+
+  local bot_api_cr = coroutine.create(bot_api.run)
+  local hltv_news_cr = coroutine.create(Bot.startHLTVCoroutine)
+
+  while true do
+    coroutine.resume(bot_api_cr)
+    coroutine.resume(hltv_news_cr)
+  end
+end
+
+function Bot.defineHandlers()
   function bot_api.on_message(message)
     local user_texts = util.str_split(message.text, ' ')
     local cmd = user_texts[1]
-    local args = util.str_split(user_texts[2], '%')
-
-    pprint(user_texts)
 
     if cmd == '/add' then
       return Bot.handlerAddExpense(message, user_texts)
@@ -39,9 +53,53 @@ function Bot.init()
     if cmd == '/list-expense-groups' then
       return Bot.handlerListExpenseGroup(message)
     end
-  end
 
-  bot_api.run()
+    if cmd == '/hltv-news' then
+      return Bot.handlerHLTVNews(message)
+    end
+  end
+end
+
+function Bot.startHLTVCoroutine()
+  local check_news_timeout = 60
+  local news_limit = 10
+  local last_news = {}
+
+  while true do
+    local new_news = {}
+    local news = HLTV.getNews()
+
+    for _, n in ipairs(news) do
+      local is_new_news = true
+
+      for _, ln in ipairs(last_news) do
+        if n.text == ln.text then
+          is_new_news = false
+          break
+        end
+      end
+
+      if is_new_news then
+        table.insert(new_news, n)
+      end
+    end
+
+    last_news = news
+
+    if #new_news > 0 then
+      local news_msg = string.format('<b>HLTV update:</b>\n', news_limit)
+
+      for i = 1, math.min(#new_news, news_limit) do
+        local n = new_news[i]
+        news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.text)
+      end
+
+      local link_preview_options = { is_disabled = true }
+      bot_api.send_message(CHAT_ID, news_msg, nil, 'HTML', nil, link_preview_options)
+    end
+
+    util.coroutineSleep(check_news_timeout)
+  end
 end
 
 function Bot.sendCodeMsg(message_chat_id, title, text)
@@ -55,6 +113,21 @@ end
 
 function Bot.sendErrorMsg(message_chat_id, text)
   bot_api.send_message(message_chat_id, '❌ ' .. text)
+end
+
+function Bot.handlerHLTVNews(message)
+  local news = HLTV.getNews()
+  local news_limit = 10
+  local news_msg = string.format('<b>Last %i HLTV News:</b>\n', news_limit)
+
+  for i = 1, math.min(#news, news_limit) do
+    local n = news[i]
+    news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.text)
+  end
+
+  local link_preview_options = { is_disabled = true }
+  print(message.chat.id)
+  bot_api.send_message(message.chat.id, news_msg, nil, 'HTML', nil, link_preview_options)
 end
 
 function Bot.handlerListExpenseCategory(message)

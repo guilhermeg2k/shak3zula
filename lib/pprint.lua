@@ -1,6 +1,6 @@
 local pprint = { VERSION = '0.1' }
 
-local depth = 1
+local depth = 2
 
 pprint.defaults = {
   -- If set to number N, then limit table recursion to N deep.
