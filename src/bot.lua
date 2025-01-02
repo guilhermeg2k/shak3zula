@@ -73,7 +73,7 @@ function Bot.startHLTVCoroutine()
       local is_new_news = true
 
       for _, ln in ipairs(last_news) do
-        if n.text == ln.text then
+        if n.title == ln.title then
           is_new_news = false
           break
         end
@@ -91,7 +91,7 @@ function Bot.startHLTVCoroutine()
 
       for i = 1, math.min(#new_news, news_limit) do
         local n = new_news[i]
-        news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.text)
+        news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.title)
       end
 
       local link_preview_options = { is_disabled = true }
@@ -122,7 +122,7 @@ function Bot.handlerHLTVNews(message)
 
   for i = 1, math.min(#news, news_limit) do
     local n = news[i]
-    news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.text)
+    news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.title)
   end
 
   local link_preview_options = { is_disabled = true }
