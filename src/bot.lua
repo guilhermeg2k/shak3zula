@@ -9,6 +9,7 @@ local Rss = require('src.rss.rss')
 
 local Bot = {
   cached_rss_items = {},
+  invalid_rss_provider_msg = 'Invalid rss provider name. To list available providers use the command /list.rss',
 }
 
 function Bot.init()
@@ -32,14 +33,29 @@ function Bot.defineHandlers()
     local cmd = util.str_split(message.text, ' ')[1]
     pprint(message, cmd)
 
-    if cmd == '/subscribe' then
+    if cmd == '/rss_list' then
+      return Bot.handleListRss(message)
+    end
+
+    if cmd == '/rss_subscribe' then
       return Bot.handlerSubscribe(message)
     end
 
-    if cmd == '/unsubscribe' then
+    if cmd == '/rss_unsubscribe' then
       return Bot.handlerUnsubscription(message)
     end
   end
+end
+
+function Bot.handleListRss(msg)
+  local list_msg = '<b>List of available RSS providers: </b>\n\n'
+
+  for provider_name, provider in pairs(RssSubscription.providers) do
+    list_msg = list_msg .. string.format('<b>%s</b>: %s\n\n', provider_name, provider.description)
+  end
+
+  local link_preview_options = { is_disabled = true }
+  bot_api.send_message(msg.chat.id, list_msg, nil, 'HTML', nil, link_preview_options)
 end
 
 function Bot.handlerSubscribe(msg)
@@ -47,7 +63,7 @@ function Bot.handlerSubscribe(msg)
   local provider = RssSubscription.providers[args[2]]
 
   if not provider then
-    return Bot.sendErrorMsg(msg.chat.id, 'Invalid rss provider name. To list available providers use the command /list.rss.providers')
+    return Bot.sendErrorMsg(msg.chat.id, Bot.invalid_rss_provider_msg)
   end
 
   if #RssSubscription.listBy(provider.name, msg.from.id) > 0 then
@@ -70,7 +86,7 @@ function Bot.handlerUnsubscription(msg)
   local provider = RssSubscription.providers[args[2]]
 
   if not provider then
-    return Bot.sendErrorMsg(msg.chat.id, 'Invalid rss provider name. To list available providers use the command /list.rss.providers')
+    return Bot.sendErrorMsg(msg.chat.id, Bot.invalid_rss_provider_msg)
   end
 
   if #RssSubscription.listBy(provider.name, msg.from.id) == 0 then
@@ -131,7 +147,7 @@ function Bot.getRssNewItems(provider)
   return new_items
 end
 
-function Bot.sendRSSUpdate(provider)
+function Bot.sendRssUpdate(provider)
   local rss_subscribers = RssSubscription.listBy(provider.name)
   if #rss_subscribers == 0 then
     return
@@ -171,7 +187,7 @@ function Bot.startRSSCoroutine()
 
   while true do
     for _, provider in pairs(RssSubscription.providers) do
-      Bot.sendRSSUpdate(provider)
+      Bot.sendRssUpdate(provider)
     end
 
     util.coroutineSleep(check_news_timeout)
@@ -184,6 +200,11 @@ end
 
 function Bot.sendErrorMsg(message_chat_id, text)
   bot_api.send_message(message_chat_id, '❌ ' .. text)
+end
+
+function Bot.sendCodeMsg(message_chat_id, title, text)
+  local full_text = '```' .. title .. '\n' .. text .. '```'
+  bot_api.send_message(message_chat_id, full_text, nil, 'MarkdownV2')
 end
 
 return Bot
