@@ -4,12 +4,12 @@ local bot_api = require('lib.telegram-bot-lua.core').configure(BOT_TOKEN)
 local util = require('src.util')
 local pprint = require('lib.pprint')
 
-local RssSubscription = require('src.rss.rss_subscription')
 local Rss = require('src.rss.rss')
+local RssSubscription = require('src.rss.rss_subscription')
+local RssCache = require('src.rss.rss_items_cache')
 
 local Bot = {
-  cached_rss_items = {},
-  invalid_rss_provider_msg = 'Invalid rss provider name. To list available providers use the command /list.rss',
+  INVALID_RSS_PROVIDER_MSG = 'Invalid rss provider name. To list available providers use the command /list.rss',
 }
 
 function Bot.init()
@@ -31,7 +31,6 @@ function Bot.defineHandlers()
     end
 
     local cmd = util.str_split(message.text, ' ')[1]
-    pprint(message, cmd)
 
     if cmd == '/rss_list' then
       return Bot.handleListRss(message)
@@ -63,7 +62,7 @@ function Bot.handlerSubscribe(msg)
   local provider = RssSubscription.providers[args[2]]
 
   if not provider then
-    return Bot.sendErrorMsg(msg.chat.id, Bot.invalid_rss_provider_msg)
+    return Bot.sendErrorMsg(msg.chat.id, Bot.INVALID_RSS_PROVIDER_MSG)
   end
 
   if #RssSubscription.listBy(provider.name, msg.from.id) > 0 then
@@ -86,7 +85,7 @@ function Bot.handlerUnsubscription(msg)
   local provider = RssSubscription.providers[args[2]]
 
   if not provider then
-    return Bot.sendErrorMsg(msg.chat.id, Bot.invalid_rss_provider_msg)
+    return Bot.sendErrorMsg(msg.chat.id, Bot.INVALID_RSS_PROVIDER_MSG)
   end
 
   if #RssSubscription.listBy(provider.name, msg.from.id) == 0 then
@@ -123,13 +122,14 @@ function Bot.getRssNewItems(provider)
 
   for _, item in ipairs(items) do
     local is_new_item = true
+    local rss_cache = RssCache.get(provider.name)
 
-    if Bot.cached_rss_items[provider.name] == nil then
-      Bot.cached_rss_items[provider.name] = {}
+    if rss_cache == nil then
+      RssCache.insert(provider.name, {})
     end
 
-    for _, cachedItem in ipairs(Bot.cached_rss_items[provider.name]) do
-      if item.title == cachedItem.title then
+    for _, cached_item in ipairs(rss_cache) do
+      if item.title == cached_item.title then
         is_new_item = false
         break
       end
@@ -141,7 +141,7 @@ function Bot.getRssNewItems(provider)
   end
 
   if #items > 0 then
-    Bot.cached_rss_items[provider.name] = items
+    RssCache.update(provider.name, items)
   end
 
   return new_items
@@ -200,11 +200,6 @@ end
 
 function Bot.sendErrorMsg(message_chat_id, text)
   bot_api.send_message(message_chat_id, '❌ ' .. text)
-end
-
-function Bot.sendCodeMsg(message_chat_id, title, text)
-  local full_text = '```' .. title .. '\n' .. text .. '```'
-  bot_api.send_message(message_chat_id, full_text, nil, 'MarkdownV2')
 end
 
 return Bot

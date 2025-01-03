@@ -14,6 +14,12 @@ function DB:create_tables()
             telegram_chat_id INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS rss_items_cache (
+            id INTEGER PRIMARY KEY,
+            rss_provider TEXT NOT NULL,
+            cache TEXT NOT NULL
+        );
+
         COMMIT;
     ]])
 end

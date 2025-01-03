@@ -6,4 +6,5 @@ dependencies = {
 	"telegram-bot-lua",
   "luasocket",
   "htmlparser",
+  "json.lua"
 }
