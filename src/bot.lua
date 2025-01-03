@@ -44,14 +44,7 @@ end
 
 function Bot.handlerSubscribe(msg)
   local args = util.str_split(msg.text, ' ')
-  local provider = nil
-
-  for provider_name, prvder in pairs(RssSubscription.providers) do
-    if args[2] == provider_name then
-      provider = prvder
-      break
-    end
-  end
+  local provider = RssSubscription.providers[args[2]]
 
   if not provider then
     return Bot.sendErrorMsg(msg.chat.id, 'Invalid rss provider name. To list available providers use the command /list.rss.providers')
@@ -70,6 +63,28 @@ function Bot.handlerSubscribe(msg)
 
   Bot.sendSuccessMsg(msg.chat.id, 'You are now subscribed to ' .. args[2])
   Bot.sendRSSItems(msg.chat.id, provider)
+end
+
+function Bot.handlerUnsubscription(msg)
+  local args = util.str_split(msg.text, ' ')
+  local provider = RssSubscription.providers[args[2]]
+
+  if not provider then
+    return Bot.sendErrorMsg(msg.chat.id, 'Invalid rss provider name. To list available providers use the command /list.rss.providers')
+  end
+
+  if #RssSubscription.listBy(provider.name, msg.from.id) == 0 then
+    return Bot.sendErrorMsg(msg.chat.id, 'You are not subscribed to ' .. provider.name)
+  end
+
+  local delete_status_code = RssSubscription.remove(provider.name, msg.from.id)
+
+  if delete_status_code ~= 0 then
+    Bot.sendErrorMsg(msg.chat.id, 'Failed to unsubscribe from ' .. provider.name)
+    return
+  end
+
+  Bot.sendSuccessMsg(msg.chat.id, 'You are now unsubscribed from ' .. args[2])
 end
 
 function Bot.sendRSSItems(chat_id, provider)
