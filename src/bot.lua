@@ -16,11 +16,11 @@ function Bot.init()
   Bot.defineHandlers()
 
   local bot_api_cr = coroutine.create(bot_api.run)
-  local rss_update_check_cr = coroutine.create(Bot.startRSSCoroutine)
+  local rss_update_cr = coroutine.create(Bot.startRSSCoroutine)
 
   while true do
     coroutine.resume(bot_api_cr)
-    coroutine.resume(rss_update_check_cr)
+    coroutine.resume(rss_update_cr)
   end
 end
 
@@ -104,6 +104,7 @@ end
 
 function Bot.sendRSSItems(chat_id, provider)
   local items = Rss.getItems(provider.link)
+
   local items_limit = 10
   local news_msg = string.format('<b>🆕 %s Last updates:</b>\n', provider.name)
 
@@ -126,6 +127,7 @@ function Bot.getRssNewItems(provider)
 
     if rss_cache == nil then
       RssCache.insert(provider.name, {})
+      rss_cache = {}
     end
 
     for _, cached_item in ipairs(rss_cache) do

@@ -21,7 +21,7 @@ end
 
 function RssCache.update(rss_provider, cache)
   local insert_stmt = DB.conn:prepare([[
-        UPDATE rss_items_cache set cache = :cache WHERE rss_provider = :rss_provider
+        UPDATE rss_items_cache set cache = :cache WHERE rss_provider = :rss_provider;
     ]])
 
   insert_stmt:bind_names({
