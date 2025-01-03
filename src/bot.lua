@@ -1,110 +1,166 @@
 local BOT_TOKEN = os.getenv('BOT_TOKEN')
-local CHAT_ID = os.getenv('CHAT_ID')
-assert(CHAT_ID ~= nil, 'CHAT_ID must be defined')
 
 local bot_api = require('lib.telegram-bot-lua.core').configure(BOT_TOKEN)
 local util = require('src.util')
 local pprint = require('lib.pprint')
 
-local Expense = require('src.expense.expense')
-local ExpenseCategory = require('src.expense.expense_category')
-local ExpenseGroup = require('src.expense.expense_group')
-local HLTV = require('src.hltv.hltv')
+local RssSubscription = require('src.rss.rss_subscription')
+local Rss = require('src.rss.rss')
 
-local Bot = {}
+local Bot = {
+  cached_rss_items = {},
+}
 
 function Bot.init()
   Bot.defineHandlers()
 
   local bot_api_cr = coroutine.create(bot_api.run)
-  local hltv_news_cr = coroutine.create(Bot.startHLTVCoroutine)
+  local rss_update_check_cr = coroutine.create(Bot.startRSSCoroutine)
 
   while true do
     coroutine.resume(bot_api_cr)
-    coroutine.resume(hltv_news_cr)
+    coroutine.resume(rss_update_check_cr)
   end
 end
 
 function Bot.defineHandlers()
   function bot_api.on_message(message)
-    local user_texts = util.str_split(message.text, ' ')
-    local cmd = user_texts[1]
-
-    if cmd == '/add' then
-      return Bot.handlerAddExpense(message, user_texts)
+    if #message.text > 100 then
+      return
     end
 
-    if cmd == '/list' then
-      return Bot.handlerListExpenses(message)
+    local cmd = util.str_split(message.text, ' ')[1]
+    pprint(message, cmd)
+
+    if cmd == '/subscribe' then
+      return Bot.handlerSubscribe(message)
     end
 
-    if cmd == '/add-expense-category' then
-      return Bot.handlerAddExpenseCategory(message, user_texts)
-    end
-
-    if cmd == '/list-expense-categories' then
-      return Bot.handlerListExpenseCategory(message)
-    end
-
-    if cmd == '/add-expense-group' then
-      return Bot.handlerAddExpenseGroup(message, user_texts)
-    end
-
-    if cmd == '/list-expense-groups' then
-      return Bot.handlerListExpenseGroup(message)
-    end
-
-    if cmd == '/hltv-news' then
-      return Bot.handlerHLTVNews(message)
+    if cmd == '/unsubscribe' then
+      return Bot.handlerUnsubscription(message)
     end
   end
 end
 
-function Bot.startHLTVCoroutine()
-  local check_news_timeout = 60
-  local news_limit = 10
-  local last_news = {}
+function Bot.handlerSubscribe(msg)
+  local args = util.str_split(msg.text, ' ')
+  local provider = nil
 
-  while true do
-    local new_news = {}
-    local news = HLTV.getNews()
+  for provider_name, prvder in pairs(RssSubscription.providers) do
+    if args[2] == provider_name then
+      provider = prvder
+      break
+    end
+  end
 
-    for _, n in ipairs(news) do
-      local is_new_news = true
+  if not provider then
+    return Bot.sendErrorMsg(msg.chat.id, 'Invalid rss provider name. To list available providers use the command /list.rss.providers')
+  end
 
-      for _, ln in ipairs(last_news) do
-        if n.title == ln.title then
-          is_new_news = false
-          break
-        end
-      end
+  if #RssSubscription.listBy(provider.name, msg.from.id) > 0 then
+    return Bot.sendErrorMsg(msg.chat.id, 'You are already subscribed to ' .. provider.name)
+  end
 
-      if is_new_news then
-        table.insert(new_news, n)
+  local insert_status_code = RssSubscription.insert(provider.name, msg.chat.id, msg.from.id)
+
+  if insert_status_code ~= 0 then
+    Bot.sendErrorMsg(msg.chat.id, 'Failed to subscribe to ' .. provider.name)
+    return
+  end
+
+  Bot.sendSuccessMsg(msg.chat.id, 'You are now subscribed to ' .. args[2])
+  Bot.sendRSSItems(msg.chat.id, provider)
+end
+
+function Bot.sendRSSItems(chat_id, provider)
+  local items = Rss.getItems(provider.link)
+  local items_limit = 10
+  local news_msg = string.format('<b>🆕 %s Last updates:</b>\n', provider.name)
+
+  for i = 1, math.min(#items, items_limit) do
+    local n = items[i]
+    news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.title)
+  end
+
+  local link_preview_options = { is_disabled = true }
+  bot_api.send_message(chat_id, news_msg, nil, 'HTML', nil, link_preview_options)
+end
+
+function Bot.getRssNewItems(provider)
+  local new_items = {}
+  local items = Rss.getItems(provider.link)
+
+  for _, item in ipairs(items) do
+    local is_new_item = true
+
+    if Bot.cached_rss_items[provider.name] == nil then
+      Bot.cached_rss_items[provider.name] = {}
+    end
+
+    for _, cachedItem in ipairs(Bot.cached_rss_items[provider.name]) do
+      if item.title == cachedItem.title then
+        is_new_item = false
+        break
       end
     end
 
-    last_news = news
+    if is_new_item then
+      table.insert(new_items, item)
+    end
+  end
 
-    if #new_news > 0 then
-      local news_msg = string.format('<b>HLTV update:</b>\n', news_limit)
+  if #items > 0 then
+    Bot.cached_rss_items[provider.name] = items
+  end
 
-      for i = 1, math.min(#new_news, news_limit) do
-        local n = new_news[i]
-        news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.title)
+  return new_items
+end
+
+function Bot.sendRSSUpdate(provider)
+  local rss_subscribers = RssSubscription.listBy(provider.name)
+  if #rss_subscribers == 0 then
+    return
+  end
+
+  local msg_limit_per_sec = 30
+  local items_limit = 10
+  local last_items = Bot.getRssNewItems(provider)
+
+  if #last_items > 0 then
+    local chat_ids = {}
+    for _, subs in ipairs(rss_subscribers) do
+      table.insert(chat_ids, subs.telegram_chat_id)
+    end
+
+    local update_msg = string.format('<b>🆕 %s update:</b>\n', provider.name)
+
+    for i = 1, math.min(#last_items, items_limit) do
+      local item = last_items[i]
+      update_msg = update_msg .. string.format('<a href="%s">%s 🔗</a>\n', item.link, item.title)
+    end
+
+    local link_preview_options = { is_disabled = true }
+
+    for index, chat_id in ipairs(chat_ids) do
+      bot_api.send_message(chat_id, update_msg, nil, 'HTML', nil, link_preview_options)
+      -- This insures bot doesn't overflows telegram api msg limit per second https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this
+      if index % msg_limit_per_sec == 0 then
+        util.coroutineSleep(1)
       end
+    end
+  end
+end
 
-      local link_preview_options = { is_disabled = true }
-      bot_api.send_message(CHAT_ID, news_msg, nil, 'HTML', nil, link_preview_options)
+function Bot.startRSSCoroutine()
+  local check_news_timeout = 60 -- seconds
+
+  while true do
+    for _, provider in pairs(RssSubscription.providers) do
+      Bot.sendRSSUpdate(provider)
     end
 
     util.coroutineSleep(check_news_timeout)
   end
-end
-
-function Bot.sendCodeMsg(message_chat_id, title, text)
-  local full_text = '```' .. title .. '\n' .. text .. '```'
-  bot_api.send_message(message_chat_id, full_text, nil, 'MarkdownV2')
 end
 
 function Bot.sendSuccessMsg(message_chat_id, text)
@@ -113,85 +169,6 @@ end
 
 function Bot.sendErrorMsg(message_chat_id, text)
   bot_api.send_message(message_chat_id, '❌ ' .. text)
-end
-
-function Bot.handlerHLTVNews(message)
-  local news = HLTV.getNews()
-  local news_limit = 10
-  local news_msg = string.format('<b>Last %i HLTV News:</b>\n', news_limit)
-
-  for i = 1, math.min(#news, news_limit) do
-    local n = news[i]
-    news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.title)
-  end
-
-  local link_preview_options = { is_disabled = true }
-  print(message.chat.id)
-  bot_api.send_message(message.chat.id, news_msg, nil, 'HTML', nil, link_preview_options)
-end
-
-function Bot.handlerListExpenseCategory(message)
-  local exps_categories = ExpenseCategory.list()
-  local full_text = 'ID NAME\n'
-
-  for _, exp in ipairs(exps_categories) do
-    full_text = full_text .. string.format('%i %s\n', exp.id, exp.name)
-  end
-
-  Bot.sendCodeMsg(message.chat.id, 'Categories', full_text)
-end
-
-function Bot.handlerAddExpenseCategory(message, user_texts)
-  local name = user_texts[2]
-
-  if ExpenseCategory.insert(name) == 0 then
-    Bot.sendSuccessMsg(message.chat.id, 'Expense category added')
-  else
-    Bot.sendErrorMsg(message.chat.id, 'Failed to add expense category')
-  end
-end
-
-function Bot.handlerListExpenseGroup(message)
-  local exps_groups = ExpenseGroup.list()
-  local full_text = 'ID NAME\n'
-
-  for _, exp in ipairs(exps_groups) do
-    full_text = full_text .. string.format('%i %s\n', exp.id, exp.name)
-  end
-
-  Bot.sendCodeMsg(message.chat.id, 'Groups', full_text)
-end
-
-function Bot.handlerAddExpenseGroup(message, user_texts)
-  local name = user_texts[2]
-
-  if ExpenseGroup.insert(name) == 0 then
-    Bot.sendSuccessMsg(message.chat.id, 'Expense group added')
-  else
-    Bot.sendErrorMsg(message.chat.id, 'Failed to add expense group')
-  end
-end
-
-function Bot.handlerAddExpense(message, user_texts)
-  local name, value = user_texts[2], user_texts[3]
-  local current_time = os.date('!%Y-%m-%dT%H:%M:%SZ')
-
-  if Expense.insert(name, value, 1, current_time, 0) == 0 then
-    Bot.sendSuccessMsg(message.chat.id, 'Expense added')
-  else
-    Bot.sendErrorMsg(message.chat.id, 'Failed to add expense')
-  end
-end
-
-function Bot.handlerListExpenses(message)
-  local exps = Expense.list()
-  local full_text = ''
-
-  for _, exp in ipairs(exps) do
-    full_text = full_text .. string.format('%s - R$ %.2f\n', exp.name, exp.value)
-  end
-
-  bot_api.send_message(message.chat.id, full_text)
 end
 
 return Bot

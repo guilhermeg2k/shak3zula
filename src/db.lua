@@ -7,30 +7,11 @@ function DB:create_tables()
   return self.conn:execute([[
         BEGIN TRANSACTION;
 
-        CREATE TABLE IF NOT EXISTS expense_categories (
+        CREATE TABLE IF NOT EXISTS rss_subscriptions (
             id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS expense_groups (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS expenses (
-            id INTEGER PRIMARY KEY,
-            value REAL NOT NULL,
-            name TEXT,
-            date TEXT NOT NULL,
-            repeat_amount INTEGER,
-            category_id INTEGER NOT NULL,
-            group_id INTEGER,
-
-            FOREIGN KEY (category_id)
-            REFERENCES expense_categories (id),
-
-            FOREIGN KEY (group_id)
-            REFERENCES expense_group (id)
+            rss_provider TEXT NOT NULL,
+            telegram_user_id INTEGER NOT NULL,
+            telegram_chat_id INTEGER NOT NULL
         );
 
         COMMIT;

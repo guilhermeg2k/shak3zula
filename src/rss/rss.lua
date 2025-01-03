@@ -1,24 +1,24 @@
 local http = require('socket.http')
 local htmlparser = require('htmlparser')
 
-local HLTV = {}
+local Rss = {}
 
-function HLTV.getNews()
-  local page = http.request('https://www.hltv.org/rss/news')
+function Rss.getItems(rss_link)
+  local page = http.request(rss_link)
   local root = htmlparser.parse(page)
   local articles = root:select('item')
-  local news = {}
+  local items = {}
 
   for _, article in ipairs(articles) do
     local link = article('link')[1]:getcontent()
     local title = article('title')[1]:getcontent()
 
     if link then
-      table.insert(news, { title = title, link = link })
+      table.insert(items, { title = title, link = link })
     end
   end
 
-  return news
+  return items
 end
 
-return HLTV
+return Rss
