@@ -8,13 +8,39 @@ local Rss = require('src.rss.rss')
 local RssSubscription = require('src.rss.rss_subscription')
 local RssCache = require('src.rss.rss_items_cache')
 
-local Bot = {
-  INVALID_RSS_PROVIDER_MSG = 'Invalid rss provider name. To list available providers use the command /list.rss',
-}
+local Bot = {}
 
 function Bot.init()
-  Bot.defineHandlers()
+  Bot.INVALID_RSS_PROVIDER_MSG = 'Invalid rss provider name. To list available providers use the command /list.rss'
 
+  Bot.commands = {
+    ['/start'] = {
+      description = 'List available commands',
+      handler = Bot.handleCommandsList,
+    },
+    ['/help'] = {
+      description = 'List available commands',
+      handler = Bot.handleCommandsList,
+    },
+    ['/rss_list'] = {
+      description = 'List available rss providers',
+      handler = Bot.handleListRss,
+    },
+    ['/rss_subscribe'] = {
+      description = 'Subscribe to a rss, use: /subscribe $provider-name',
+      handler = Bot.handlerSubscribe,
+    },
+    ['/rss_unsubscribe'] = {
+      description = 'Unsubscribe from a rss, use: /unsubscribe $provider-name',
+      handler = Bot.handlerUnsubscription,
+    },
+  }
+
+  Bot.setCommandHandlers()
+  Bot.run()
+end
+
+function Bot.run()
   local bot_api_cr = coroutine.create(bot_api.run)
   local rss_update_cr = coroutine.create(Bot.startRSSCoroutine)
 
@@ -24,26 +50,31 @@ function Bot.init()
   end
 end
 
-function Bot.defineHandlers()
+function Bot.setCommandHandlers()
   function bot_api.on_message(message)
     if #message.text > 100 then
       return
     end
 
     local cmd = util.str_split(message.text, ' ')[1]
+    local bot_cmd = Bot.commands[cmd]
 
-    if cmd == '/rss_list' then
-      return Bot.handleListRss(message)
+    if not bot_cmd then
+      return Bot.sendErrorMsg(message.chat.id, 'Unrecognized command, use /help to get available commands')
     end
 
-    if cmd == '/rss_subscribe' then
-      return Bot.handlerSubscribe(message)
-    end
-
-    if cmd == '/rss_unsubscribe' then
-      return Bot.handlerUnsubscription(message)
-    end
+    bot_cmd.handler(message)
   end
+end
+
+function Bot.handleCommandsList(msg)
+  local msg_text = '<b>Available commands:</b>\n'
+
+  for cmd_name, cmd in pairs(Bot.commands) do
+    msg_text = msg_text .. string.format('%s: %s\n', cmd_name, cmd.description)
+  end
+
+  Bot.sendHTMLMessage(msg.chat.id, msg_text)
 end
 
 function Bot.handleListRss(msg)
@@ -53,8 +84,7 @@ function Bot.handleListRss(msg)
     list_msg = list_msg .. string.format('<b>%s</b>: %s\n\n', provider_name, provider.description)
   end
 
-  local link_preview_options = { is_disabled = true }
-  bot_api.send_message(msg.chat.id, list_msg, nil, 'HTML', nil, link_preview_options)
+  Bot.sendHTMLMessage(msg.chat.id, list_msg)
 end
 
 function Bot.handlerSubscribe(msg)
@@ -113,8 +143,7 @@ function Bot.sendRSSItems(chat_id, provider)
     news_msg = news_msg .. string.format('<a href="%s">%s 🔗</a>\n', n.link, n.title)
   end
 
-  local link_preview_options = { is_disabled = true }
-  bot_api.send_message(chat_id, news_msg, nil, 'HTML', nil, link_preview_options)
+  Bot.sendHTMLMessage(chat_id, news_msg)
 end
 
 function Bot.getRssNewItems(provider)
@@ -157,25 +186,23 @@ function Bot.sendRssUpdate(provider)
 
   local msg_limit_per_sec = 30
   local items_limit = 10
-  local last_items = Bot.getRssNewItems(provider)
+  local new_items = Bot.getRssNewItems(provider)
 
-  if #last_items > 0 then
+  if #new_items > 0 then
     local chat_ids = {}
     for _, subs in ipairs(rss_subscribers) do
       table.insert(chat_ids, subs.telegram_chat_id)
     end
 
-    local update_msg = string.format('<b>🆕 %s update:</b>\n', provider.name)
+    local update_msg = string.format('<b>🚨 %s Update 🚨</b>\n', provider.name)
 
-    for i = 1, math.min(#last_items, items_limit) do
-      local item = last_items[i]
-      update_msg = update_msg .. string.format('<a href="%s">%s 🔗</a>\n', item.link, item.title)
+    for i = 1, math.min(#new_items, items_limit) do
+      local item = new_items[i]
+      update_msg = update_msg .. string.format('<a href="%s">🆕 %s</a>\n', item.link, item.title)
     end
 
-    local link_preview_options = { is_disabled = true }
-
     for index, chat_id in ipairs(chat_ids) do
-      bot_api.send_message(chat_id, update_msg, nil, 'HTML', nil, link_preview_options)
+      Bot.sendHTMLMessage(chat_id, update_msg)
       -- This insures bot doesn't overflows telegram api msg limit per second https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this
       if index % msg_limit_per_sec == 0 then
         util.coroutineSleep(1)
@@ -194,6 +221,11 @@ function Bot.startRSSCoroutine()
 
     util.coroutineSleep(check_news_timeout)
   end
+end
+
+function Bot.sendHTMLMessage(chat_id, text)
+  local link_preview_options = { is_disabled = true }
+  bot_api.send_message(chat_id, text, nil, 'HTML', nil, link_preview_options)
 end
 
 function Bot.sendSuccessMsg(message_chat_id, text)
