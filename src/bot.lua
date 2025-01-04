@@ -11,7 +11,7 @@ local RssCache = require('src.rss.rss_items_cache')
 local Bot = {}
 
 function Bot.init()
-  Bot.INVALID_RSS_PROVIDER_MSG = 'Invalid rss provider name. To list available providers use the command /list.rss'
+  Bot.INVALID_RSS_PROVIDER_MSG = 'Invalid rss provider name. To list available providers use the command /list_rss'
 
   Bot.commands = {
     ['/start'] = {
