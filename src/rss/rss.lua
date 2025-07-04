@@ -12,9 +12,10 @@ function Rss.getItems(rss_link)
   for _, article in ipairs(articles) do
     local link = article('link')[1]:getcontent()
     local title = article('title')[1]:getcontent()
+    local guid = article('guid')[1]:getcontent()
 
     if link then
-      table.insert(items, { title = title, link = link })
+      table.insert(items, { title = title, link = link, guid = guid or link })
     end
   end
 

@@ -2,7 +2,6 @@ local BOT_TOKEN = os.getenv('BOT_TOKEN')
 
 local bot_api = require('lib.telegram-bot-lua.core').configure(BOT_TOKEN)
 local util = require('src.util')
-local pprint = require('lib.pprint')
 
 local Rss = require('src.rss.rss')
 local RssSubscription = require('src.rss.rss_subscription')
@@ -160,7 +159,7 @@ function Bot.getRssNewItems(provider)
     end
 
     for _, cached_item in ipairs(rss_cache) do
-      if item.title == cached_item.title then
+      if item.guid == cached_item.guid then
         is_new_item = false
         break
       end
