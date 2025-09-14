@@ -149,17 +149,26 @@ function Bot.getRssNewItems(provider)
   local new_items = {}
   local items = Rss.getItems(provider.link)
 
+  local rss_cache = RssCache.get(provider.name)
+  if rss_cache == nil then
+    RssCache.insert(provider.name, {})
+    rss_cache = {}
+  end
+
   for _, item in ipairs(items) do
     local is_new_item = true
-    local rss_cache = RssCache.get(provider.name)
-
-    if rss_cache == nil then
-      RssCache.insert(provider.name, {})
-      rss_cache = {}
-    end
 
     for _, cached_item in ipairs(rss_cache) do
-      if item.guid == cached_item.guid then
+      local is_item_and_cached_same = item.guid == cached_item.guid
+          or item.title == cached_item.title
+          or item.link == cached_item.link
+
+      if is_item_and_cached_same then
+        is_new_item = false
+        break
+      end
+
+      if item.link == cached_item.link then
         is_new_item = false
         break
       end
