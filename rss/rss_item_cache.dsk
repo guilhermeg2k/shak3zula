@@ -1,0 +1,150 @@
+import "@/lib/rss_parser": Item
+import "std/array"
+import "std/json"
+import "std/map"
+import "std/sqlite"
+import "std/string"
+import "@/rss/rss": RssProviderKey
+
+struct RssItemCacheService
+    let MAX_ITEMS = 100
+
+    db_conn: sqlite::Database
+
+    func insert(self: @, rss_provider: RssProviderKey, items: []Item) -> !void
+        let deduped = merge_unique(items, [], RssItemCacheService.MAX_ITEMS)
+        let encoded = try json::encode(deduped)
+        try self.db_conn.execute_with(
+            """
+                INSERT INTO rss_items_cache(rss_provider, cache)
+                VALUES (:rss_provider, :cache)
+            """,
+            @(rss_provider = rss_provider, cache = encoded)
+        )
+    end
+
+    func update(self: @, rss_provider: RssProviderKey, items: []Item) -> !void
+        try self.db_conn.transaction(func(tx)
+            let row = try tx.query_one_with[string](
+                "SELECT cache FROM rss_items_cache WHERE rss_provider = :rss_provider LIMIT 1",
+                @(rss_provider = rss_provider)
+            )
+
+            let mut current: []Item = []
+            let mut has_row = false
+
+            if row: cached_json then
+                has_row = true
+                current = json::decode[[]Item](cached_json) catch _ then
+                    return sqlite::SqliteError.Corrupt
+                end
+            end
+
+            let merged = merge_unique(items, current, RssItemCacheService.MAX_ITEMS)
+            let encoded = json::encode(merged) catch _ then
+                return sqlite::SqliteError.Other
+            end
+
+            if has_row then
+                try tx.execute_with(
+                    """
+                        UPDATE rss_items_cache
+                        SET cache = :cache
+                        WHERE rss_provider = :rss_provider
+                    """,
+                    @(rss_provider = rss_provider, cache = encoded)
+                )
+            else
+                try tx.execute_with(
+                    """
+                        INSERT INTO rss_items_cache(rss_provider, cache)
+                        VALUES (:rss_provider, :cache)
+                    """,
+                    @(rss_provider = rss_provider, cache = encoded)
+                )
+            end
+        end)
+    end
+
+    func get(self: @, rss_provider: RssProviderKey) -> ![]Item
+        let row = try self.db_conn.query_one_with[string](
+            "SELECT cache FROM rss_items_cache WHERE rss_provider = :rss_provider LIMIT 1",
+            @(rss_provider = rss_provider)
+        )
+
+        if row: cached_json then
+            return try json::decode[[]Item](cached_json)
+        end
+
+        return []
+    end
+end
+
+func ~merge_unique(incoming: []Item, existing: []Item, limit: int) -> []Item
+    let mut result: []Item = []
+    let mut seen_guids: map[string, bool] = {}
+    let mut seen_links: map[string, bool] = {}
+    let mut seen_titles: map[string, bool] = {}
+
+    for incoming: item do
+        if array::len(result) >= limit then
+            return result
+        end
+        if !is_seen(item, seen_guids, seen_links, seen_titles) then
+            mark_seen(item, seen_guids, seen_links, seen_titles)
+            array::append(result, copy(item))
+        end
+    end
+
+    for existing: item do
+        if array::len(result) >= limit then
+            return result
+        end
+        if !is_seen(item, seen_guids, seen_links, seen_titles) then
+            mark_seen(item, seen_guids, seen_links, seen_titles)
+            array::append(result, copy(item))
+        end
+    end
+
+    return result
+end
+
+func ~is_seen(
+    item: Item,
+    seen_guids: map[string, bool],
+    seen_links: map[string, bool],
+    seen_titles: map[string, bool]
+) -> bool
+    if string::len(item.guid) > 0 and map::has(seen_guids, item.guid) then
+        return true
+    end
+
+    if string::len(item.link) > 0 and map::has(seen_links, item.link) then
+        return true
+    end
+
+    if string::len(item.title) > 0 and map::has(seen_titles, item.title) then
+        return true
+    end
+
+    return false
+end
+
+func ~mark_seen(
+    item: Item,
+    mut seen_guids: map[string, bool],
+    mut seen_links: map[string, bool],
+    mut seen_titles: map[string, bool]
+) -> void
+    if string::len(item.guid) > 0 then
+        seen_guids[item.guid] = true
+    end
+
+    if string::len(item.link) > 0 then
+        seen_links[item.link] = true
+    end
+
+    if string::len(item.title) > 0 then
+        seen_titles[item.title] = true
+    end
+end

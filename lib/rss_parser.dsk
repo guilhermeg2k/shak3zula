@@ -1,0 +1,197 @@
+import "std/array"
+import "std/string"
+
+struct Item
+    title: string
+    link: string
+    guid: string
+end
+
+func parse(xml: string) -> []Item
+    let mut items: []Item = []
+    let mut pos = 0
+
+    for true do
+        let open_start = find_open_tag(xml, "item", pos)
+        if open_start: start_idx then
+            let open_end = string::find(xml, ">", start_idx + 5)
+            if open_end: gt_idx then
+                let content_start = gt_idx + 1
+                let close_start = string::find(xml, "</item>", content_start)
+                if close_start: end_idx then
+                    let block = string::slice(xml, content_start, end_idx) catch ""
+                    let link = (extract_tag(block, "link") orelse "") |> string::trim()
+                    if string::len(link) > 0 then
+                        let title = (extract_tag(block, "title") orelse "") |> string::trim()
+                        let raw_guid = (extract_tag(block, "guid") orelse "") |> string::trim()
+                        let guid = if string::len(raw_guid) > 0 then raw_guid else link end
+                        array::append(items, Item(title = title, link = link, guid = guid))
+                    end
+                    pos = end_idx + 7
+                else
+                    break
+                end
+            else
+                break
+            end
+        else
+            break
+        end
+    end
+
+    return items
+end
+
+func extract_tag(xml: string, tag: string) -> ?string
+    let open_start = find_open_tag(xml, tag, 0)
+    if open_start: start_idx then
+        let tag_len = string::len(tag)
+        let open_end = string::find(xml, ">", start_idx + 1 + tag_len)
+        if open_end: gt_idx then
+            # Self-closing tag like <link/>
+            if gt_idx > start_idx + 1 then
+                let prev = string::byte_at(xml, gt_idx - 1) catch 0
+                if prev == '/' then
+                    return ""
+                end
+            end
+
+            let content_start = gt_idx + 1
+            let close_tag = "</${tag}>"
+            let close_start = string::find(xml, close_tag, content_start)
+            if close_start: end_idx then
+                let raw = string::slice(xml, content_start, end_idx) catch ""
+                return decode_content(raw)
+            end
+        end
+    end
+
+    return null
+end
+
+func decode_entities(text: string) -> string
+    if !string::contains(text, "&") then
+        return text
+    end
+
+    let mut parts: []string = []
+    let mut pos = 0
+    let total = string::len(text)
+
+    for pos < total do
+        let amp = string::find(text, "&", pos)
+        if amp: amp_idx then
+            if amp_idx > pos then
+                let chunk = string::slice(text, pos, amp_idx) catch ""
+                array::append(parts, chunk)
+            end
+
+            let semi = string::find(text, ";", amp_idx + 1)
+            if semi: semi_idx then
+                let entity = string::slice(text, amp_idx + 1, semi_idx) catch ""
+                let decoded = decode_single_entity(entity)
+                if decoded: value then
+                    array::append(parts, value)
+                    pos = semi_idx + 1
+                else
+                    array::append(parts, "&")
+                    pos = amp_idx + 1
+                end
+            else
+                let rest = string::slice(text, amp_idx, total) catch ""
+                array::append(parts, rest)
+                break
+            end
+        else
+            let rest = string::slice(text, pos, total) catch ""
+            array::append(parts, rest)
+            break
+        end
+    end
+
+    return string::join(parts)
+end
+
+func ~find_open_tag(xml: string, tag: string, start: int) -> ?int
+    let needle = "<${tag}"
+    let needle_len = string::len(needle)
+    let total = string::len(xml)
+    let mut pos = start
+
+    for pos < total do
+        let found = string::find(xml, needle, pos)
+        if found: idx then
+            let next_idx = idx + needle_len
+            if next_idx < total then
+                let next_byte = string::byte_at(xml, next_idx) catch 0
+                if next_byte == '>' or next_byte == '/' or next_byte == ' ' or next_byte == '\t' or next_byte == '\n' or next_byte == '\r' then
+                    return idx
+                end
+            end
+            pos = idx + needle_len
+        else
+            return null
+        end
+    end
+
+    return null
+end
+
+func ~decode_content(raw: string) -> string
+    let trimmed = string::trim(raw)
+    if string::starts_with(trimmed, "<![CDATA[") and string::ends_with(trimmed, "]]>") then
+        let total = string::len(trimmed)
+        if total >= 12 then
+            return string::slice(trimmed, 9, total - 3) catch trimmed
+        end
+    end
+    return decode_entities(raw)
+end
+
+func ~decode_single_entity(entity: string) -> ?string
+    when entity
+        "amp" then return "&" end
+        "lt" then return "<" end
+        "gt" then return ">" end
+        "quot" then return "\"" end
+        "apos" then return "'" end
+        else then end
+    end
+
+    if string::starts_with(entity, "#x") or string::starts_with(entity, "#X") then
+        let hex_str = string::slice(entity, 2, string::len(entity)) catch ""
+        if parse_hex(hex_str): codepoint then
+            return string::from_codepoint(codepoint) catch null
+        end
+    elif string::starts_with(entity, "#") then
+        let dec_str = string::slice(entity, 1, string::len(entity)) catch ""
+        let codepoint = string::to_int(dec_str) catch -1
+        if codepoint >= 0 then
+            return string::from_codepoint(codepoint) catch null
+        end
+    end
+
+    return null
+end
+
+func ~parse_hex(text: string) -> ?int
+    if string::len(text) == 0 then
+        return null
+    end
+
+    let mut value = 0
+    for text: b do
+        let digit = when b
+            '0'..'9' then b - '0' end
+            'a'..'f' then 10 + (b - 'a') end
+            'A'..'F' then 10 + (b - 'A') end
+            else then return null end
+        end
+        if value > 1114111 then
+            return null
+        end
+        value = value * 16 + digit
+    end
+
+    return value
+end

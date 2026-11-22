@@ -1,0 +1,65 @@
+import "std/sqlite"
+import "@/rss/rss": RssProviderKey
+
+struct RssSubscription
+    id: int = 0
+    rss_provider: RssProviderKey
+    telegram_user_id: int
+    telegram_chat_id: int
+end
+
+struct RssSubscriptionService
+    db_conn: sqlite::Database
+
+    func insert(self: @, subscription: RssSubscription) -> !RssSubscription
+        let changes = try self.db_conn.execute_with(
+            """
+                INSERT INTO rss_subscriptions(rss_provider, telegram_chat_id, telegram_user_id)
+                VALUES (:rss_provider, :telegram_chat_id, :telegram_user_id)
+            """,
+            @(
+                rss_provider = subscription.rss_provider,
+                telegram_chat_id = subscription.telegram_chat_id,
+                telegram_user_id = subscription.telegram_user_id
+            )
+        )
+
+        let mut created_subscription = copy(subscription)
+        created_subscription.id = changes.last_id
+
+        return created_subscription
+    end
+
+    func list(self: @) -> ![]RssSubscription
+        return try self.db_conn.query[RssSubscription]("SELECT * FROM rss_subscriptions")
+    end
+
+    func list_by(self: @, rss_provider: RssProviderKey, telegram_user_id: ?int = null) -> ![]RssSubscription
+        if telegram_user_id: user_id then
+            return try self.db_conn.query_with[RssSubscription](
+                """
+                    SELECT * FROM rss_subscriptions
+                    WHERE rss_provider = :rss_provider
+                        AND telegram_user_id = :telegram_user_id
+                """,
+                @(rss_provider = rss_provider, telegram_user_id = user_id)
+            )
+        end
+
+        return try self.db_conn.query_with[RssSubscription](
+            "SELECT * FROM rss_subscriptions WHERE rss_provider = :rss_provider",
+            @(rss_provider = rss_provider)
+        )
+    end
+
+    func remove(self: @, rss_provider: RssProviderKey, telegram_user_id: int) -> !void
+        try self.db_conn.execute_with(
+            """
+                DELETE FROM rss_subscriptions
+                WHERE rss_provider = :rss_provider
+                    AND telegram_user_id = :telegram_user_id
+            """,
+            @(rss_provider = rss_provider, telegram_user_id = telegram_user_id)
+        )
+    end
+end

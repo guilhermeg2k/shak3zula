@@ -1,0 +1,22 @@
+import "std/io"
+import "std/sqlite"
+import "std/os"
+import "@/db": Database
+import "@/bot": Bot
+import "@/rss/rss_subscription": RssSubscriptionService
+import "@/rss/rss_item_cache": RssItemCacheService
+
+func main () -> !void
+    let DB_PATH = "./data/bot.db"
+    let BOT_TOKEN = (os::env("BOT_TOKEN") catch "") orelse ""
+
+    let mut db = try Database.init(DB_PATH)
+    let mut rss_subscription_service = RssSubscriptionService(db_conn = db.conn)
+    let mut rss_item_cache_service = RssItemCacheService(db_conn = db.conn)
+
+    try Bot.init(
+        token = BOT_TOKEN,
+        rss_subscription_service = rss_subscription_service,
+        rss_item_cache_service = rss_item_cache_service,
+    )
+end

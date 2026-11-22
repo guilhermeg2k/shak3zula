@@ -1,0 +1,45 @@
+import "std/sqlite"
+import "std/os"
+import "std/fs"
+import "std/path"
+
+struct Database
+    conn: sqlite::Database
+
+    func init(db_path: string) -> !Database
+        let dir = path::dirname(db_path)
+
+        if dir: d then
+            try fs::make_dir(d, recursive = true)
+        end
+
+        let conn = try sqlite::open(db_path)
+        let self: Database = @(conn = conn)
+        try self.create_tables()
+
+        return self
+    end
+
+    func ~create_tables(self: @) -> !void
+        return try self.conn.transaction(
+            func(tx)
+                try tx.execute(
+                """
+                    CREATE TABLE IF NOT EXISTS rss_subscriptions (
+                        id INTEGER PRIMARY KEY,
+                        rss_provider TEXT NOT NULL,
+                        telegram_user_id INTEGER NOT NULL,
+                        telegram_chat_id INTEGER NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS rss_items_cache (
+                        id INTEGER PRIMARY KEY,
+                        rss_provider TEXT NOT NULL UNIQUE,
+                        cache TEXT NOT NULL
+                    );
+                """
+                )
+            end
+        )
+    end
+end

@@ -1,0 +1,57 @@
+import "@/lib/rss_parser"
+import "std/http"
+import "std/string"
+
+enum RssProviderKey
+    HLTV
+    VLR
+
+    func from_name(name: string) -> ?@
+        when string::lower(string::trim(name))
+            "hltv" then return RssProviderKey.HLTV end
+            "vlr" then return RssProviderKey.VLR end
+            else then return null end
+        end
+    end
+
+    func name(self: @) -> string
+        return when self
+            RssProviderKey.HLTV then "HLTV" end
+            RssProviderKey.VLR then "VLR" end
+        end
+    end
+end
+
+struct RssProvider
+    name: string
+    description: string
+    link: string
+end
+
+struct Rss
+    providers: map[RssProviderKey, RssProvider] = {
+        RssProviderKey.HLTV: RssProvider(
+            name = "HLTV",
+            description = "HLTV.org is the leading Counter-Strike site in the world, featuring news, demos, pictures, statistics, on-site coverage and much much more!",
+            link = "https://www.hltv.org/rss/news"
+        ),
+        RssProviderKey.VLR: RssProvider(
+            name = "VLR",
+            description = "A competitive valorant community -- news, events, matches, discussion, streams, stats, and more",
+            link = "https://www.vlr.gg/rss"
+        )
+    }
+
+    func get_items(self: @, rss_provider: RssProviderKey) -> ![]rss_parser::Item
+        let provider = self.providers[rss_provider]
+
+        if provider: p then
+            let page = try http::request(p.link, timeout_ms = 5000)
+            let page_html = try page.text()
+
+            return rss_parser::parse(page_html)
+        end
+
+        return []
+    end
+end

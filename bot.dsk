@@ -1,0 +1,319 @@
+import "std/http"
+import "std/sqlite"
+import "std/string"
+import "std/io"
+import "std/task"
+import "std/time"
+import "std/array": len
+import "@/lib/telegram"
+import "@/lib/rss_parser": Item
+import "@/rss/rss": Rss, RssProvider, RssProviderKey
+import "@/rss/rss_subscription": RssSubscription, RssSubscriptionService
+import "@/rss/rss_item_cache": RssItemCacheService
+
+error RssError
+    ProviderNotFound
+end
+
+error BotError = telegram::TelegramError | sqlite::SqliteError | http::HttpError | RssError
+
+let INVALID_RSS_PROVIDER_MSG = "Invalid rss provider name. To list available providers use the command /rss_list"
+
+struct Bot
+    rss_subscription_service: RssSubscriptionService
+    rss_item_cache_service: RssItemCacheService
+
+    ~rss = Rss()
+    ~tel_bot: telegram::Bot
+
+    ~commands = {
+        "/start": @(
+            description = "List available commands",
+            handler = Bot.list_commands
+        ),
+        "/help": @(
+            description = "List available commands",
+            handler = Bot.list_commands
+        ),
+        "/rss_list": @(
+            description = "List available rss providers",
+            handler = Bot.list_rss
+        ),
+        "/rss_subscribe": @(
+            description = "Subscribe to a rss, use: /rss_subscribe \$provider-name",
+            handler = Bot.subscribe
+        ),
+        "/rss_unsubscribe": @(
+            description = "Unsubscribe from a rss, use: /rss_unsubscribe \$provider-name",
+            handler = Bot.unsubscribe
+        )
+    }
+
+    func init(
+        token: string,
+        mut rss_subscription_service: RssSubscriptionService,
+        mut rss_item_cache_service: RssItemCacheService
+    ) -> !void
+        let mut self: Bot = @(
+            tel_bot = try telegram::configure(token),
+            rss_subscription_service = rss_subscription_service,
+            rss_item_cache_service = rss_item_cache_service
+        )
+
+        let bot_name = self.tel_bot.info.username orelse self.tel_bot.info.first_name
+        io::println("Logged in as @${bot_name}")
+
+        self.tel_bot.on_message = func(msg: telegram::Message) -> void
+            self.handle_msg(msg) catch e then
+                io::eprintln("Failed to handle message ($e): ${string::slice(msg.text orelse "", 0, 10) catch ""}")
+            end
+        end
+
+        spawn(func() -> return self.send_rss_update_task())
+
+        self.tel_bot.run(limit = 100, timeout = 30)
+    end
+
+    func send_rss_update_task(self: @) -> void
+        let check_news_timeout = 60
+
+        for true do
+            io::println("[${time::now() |> time::to_iso_string() catch ""}] Running update task")
+            for self.rss.providers: provider, key do
+                self.send_rss_update(key) catch io::eprintln("Failed to send RSS update for ${provider.name}")
+            end
+
+            task::sleep(time::seconds(check_news_timeout))
+        end
+    end
+
+    func handle_msg(self: @, msg: telegram::Message) -> !void
+        let text = msg.text orelse ""
+        let text_len = string::len(text)
+
+        let is_invalid_msg = text_len == 0 or text_len > 100
+        if is_invalid_msg then
+            return
+        end
+
+        let parts = string::split(string::trim(text), " ")
+        let cmd = parts[0]
+
+        if self.commands[cmd]: command then
+            try command.handler(self, msg)
+        else
+            return try self.send_error_msg(msg.chat.id, "Unrecognized command, use /help to get available commands")
+        end
+    end
+
+    func list_commands(self: @, msg: telegram::Message) -> BotError!void
+        let mut msg_text = "<b>Available commands:</b>\n"
+
+        for self.commands: cmd, cmd_name do
+            msg_text = string::concat(msg_text, "${cmd_name}: ${cmd.description}\n")
+        end
+
+        try self.send_html_message(msg.chat.id, msg_text)
+    end
+
+    func list_rss(self: @, msg: telegram::Message) -> BotError!void
+        let mut list_msg = "<b>List of available RSS providers: </b>\n\n"
+
+        for self.rss.providers: provider do
+            list_msg = string::concat(list_msg, "<b>${provider.name}</b>: ${provider.description}\n\n")
+        end
+
+        try self.send_html_message(msg.chat.id, list_msg)
+    end
+
+    func subscribe(self: @, msg: telegram::Message) -> BotError!void
+        let text = msg.text orelse ""
+        let args = string::split(string::trim(text), " ")
+
+        if len(args) < 2 then
+            return try self.send_error_msg(msg.chat.id, INVALID_RSS_PROVIDER_MSG)
+        end
+
+        let provider_key = if RssProviderKey.from_name(args[1]): key then
+            key
+        else
+            return try self.send_error_msg(msg.chat.id, INVALID_RSS_PROVIDER_MSG)
+        end
+
+        let provider = if self.rss.providers[provider_key]: p then
+            p
+        else
+            return try self.send_error_msg(msg.chat.id, INVALID_RSS_PROVIDER_MSG)
+        end
+
+        let user = if msg.from: u then
+            u
+        else
+            return try self.send_error_msg(msg.chat.id, "Could not identify user")
+        end
+
+        let existing = try self.rss_subscription_service.list_by(
+            rss_provider = provider_key,
+            telegram_user_id = user.id
+        )
+
+        if len(existing) > 0 then
+            return try self.send_error_msg(msg.chat.id, "You are already subscribed to ${provider.name}")
+        end
+
+        let sub = RssSubscription(
+            rss_provider = provider_key,
+            telegram_user_id = user.id,
+            telegram_chat_id = msg.chat.id
+        )
+
+        self.rss_subscription_service.insert(sub) catch _ then
+            return try self.send_error_msg(msg.chat.id, "Failed to subscribe to ${provider.name}")
+        end
+
+        try self.send_success_msg(msg.chat.id, "You are now subscribed to ${provider.name}")
+        try self.send_recent_news(msg.chat.id, provider_key)
+    end
+
+    func unsubscribe(self: @, msg: telegram::Message) -> BotError!void
+        let text = msg.text orelse ""
+        let args = string::split(string::trim(text), " ")
+
+        if len(args) < 2 then
+            return try self.send_error_msg(msg.chat.id, INVALID_RSS_PROVIDER_MSG)
+        end
+
+        let provider_key = if RssProviderKey.from_name(args[1]): key then
+            key
+        else
+            return try self.send_error_msg(msg.chat.id, INVALID_RSS_PROVIDER_MSG)
+        end
+
+        let provider = if self.rss.providers[provider_key]: p then
+            p
+        else
+            return try self.send_error_msg(msg.chat.id, INVALID_RSS_PROVIDER_MSG)
+        end
+
+        let user = if msg.from: u then
+            u
+        else
+            return try self.send_error_msg(msg.chat.id, "Could not identify user")
+        end
+
+        let existing = try self.rss_subscription_service.list_by(
+            rss_provider = provider_key,
+            telegram_user_id = user.id
+        )
+
+        if len(existing) == 0 then
+            return try self.send_error_msg(msg.chat.id, "You are not subscribed to ${provider.name}")
+        end
+
+        self.rss_subscription_service.remove(
+            rss_provider = provider_key,
+            telegram_user_id = user.id
+        ) catch _ then
+            return try self.send_error_msg(msg.chat.id, "Failed to unsubscribe from ${provider.name}")
+        end
+
+        try self.send_success_msg(msg.chat.id, "You are now unsubscribed from ${provider.name}")
+    end
+
+    func send_recent_news(self: @, chat_id: int, provider_key: RssProviderKey) -> !void
+        let items = try self.rss.get_items(provider_key)
+
+        let items_limit = 10
+        let mut news_msg = "<b>🆕 ${provider_key.name()} Last updates:</b>\n"
+
+        for items: item, index do
+            if index >= items_limit then
+                break
+            end
+
+            news_msg = string::concat(news_msg, Bot.make_rss_item_news_html(item))
+        end
+
+        try self.send_html_message(chat_id, news_msg)
+    end
+
+    func send_rss_update(self: @, rss_provider: RssProviderKey) -> !void
+        let provider = if self.rss.providers[rss_provider]: p then p else return RssError.ProviderNotFound end
+        let rss_subscribers = try self.rss_subscription_service.list_by(rss_provider = rss_provider, telegram_user_id = null)
+
+        if len(rss_subscribers) == 0 then return end
+
+        let msg_limit_per_sec = 30
+        let update_item_limit = 10
+        let new_items = try self.get_rss_new_items(rss_provider)
+
+        if len(new_items) == 0 then return end
+
+        let chat_ids: []int = array::map(rss_subscribers, func(sub) -> return sub.telegram_chat_id)
+        let mut update_msg = "<b>🚨 ${provider.name} Update 🚨</b>\n"
+
+        for new_items: item, index do
+            if index >= update_item_limit then
+                break
+            end
+            update_msg = string::concat(update_msg, Bot.make_rss_item_news_html(item))
+        end
+
+        for chat_ids: id, index do
+            try self.send_html_message(id, update_msg)
+
+            #= This insures bot doesn't overflows telegram api msg limit per second
+               https://core.telegram.org/bots/faq#my-bot-is-hitting-limits-how-do-i-avoid-this
+            =#
+            if (index + 1) % msg_limit_per_sec == 0 then
+                task::sleep(time::seconds(1))
+            end
+        end
+    end
+
+    func get_rss_new_items(self: @, provider: RssProviderKey) -> ![]Item
+        let mut new_items: []Item = []
+        let items = try self.rss.get_items(provider)
+
+        let rss_cache = try self.rss_item_cache_service.get(provider)
+
+        for items: item do
+            let mut is_new = true
+            for rss_cache: cached_item do
+                if item.guid == cached_item.guid or item.title == cached_item.title or item.link == cached_item.link then
+                    is_new = false
+                    break
+                end
+            end
+
+            if is_new then
+                array::append(new_items, copy(item))
+            end
+        end
+
+        if len(items) > 0 then
+            try self.rss_item_cache_service.update(provider, items)
+        end
+
+        return new_items
+    end
+
+    func make_rss_item_news_html(item: Item) -> return "<a href=\"${item.link}\">${item.title} 🔗</a>\n"
+
+    func send_html_message(self: @, chat_id: int, text: string) -> !void
+        try self.tel_bot.send_message(
+            chat_id,
+            text,
+            parse_mode = "HTML",
+            link_preview_options = @(is_disabled = true)
+        )
+    end
+
+    func send_success_msg(self: @, message_chat_id: int, text: string) -> !void
+        try self.tel_bot.send_message(message_chat_id, string::concat("✅ ", text))
+    end
+
+    func send_error_msg(self: @, message_chat_id: int, text: string) -> !void
+        try self.tel_bot.send_message(message_chat_id, string::concat("❌ ", text))
+    end
+end

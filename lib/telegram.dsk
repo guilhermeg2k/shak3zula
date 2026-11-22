@@ -1,0 +1,320 @@
+import "std/http"
+import "std/io"
+import "std/json"
+import "std/string"
+import "std/task"
+import "std/time"
+
+let DEFAULT_ENDPOINT = "https://api.telegram.org/bot"
+
+error TelegramError
+    InvalidToken
+    RequestFailed
+    InvalidResponse
+    ApiError
+end
+
+schema TelegramApi end
+
+struct User
+    id: int
+    is_bot: bool = false
+    first_name: string = ""
+    last_name: ?string = null
+    username: ?string = null
+end
+
+struct Chat
+    id: int
+    type: string = ""
+    title: ?string = null
+    username: ?string = null
+    first_name: ?string = null
+    last_name: ?string = null
+end
+
+struct Message
+    message_id: int
+    date: int = 0
+    chat: Chat
+    from: ?User = null
+    text: ?string = null
+    message_thread_id: ?int = null
+end
+
+struct Update
+    update_id: int
+    message: ?Message = null
+    edited_message: ?Message = null
+end
+
+struct LinkPreviewOptions
+    is_disabled: ?bool = null
+    url: ?string = null
+    prefer_small_media: ?bool = null
+    prefer_large_media: ?bool = null
+    show_above_text: ?bool = null
+
+    schema TelegramApi
+        is_disabled: omit_null
+        url: omit_null
+        prefer_small_media: omit_null
+        prefer_large_media: omit_null
+        show_above_text: omit_null
+    end
+end
+
+struct ~ApiResponse[T]
+    ok: bool
+    result: ?T = null
+    error_code: ?int = null
+    description: ?string = null
+end
+
+struct ~GetUpdatesRequest
+    offset: ?int = null
+    limit: ?int = null
+    timeout: ?int = null
+    allowed_updates: ?[]string = null
+
+    schema TelegramApi
+        offset: omit_null
+        limit: omit_null
+        timeout: omit_null
+        allowed_updates: omit_null
+    end
+end
+
+struct ~SendMessageRequest
+    chat_id: int
+    text: string
+    message_thread_id: ?int = null
+    parse_mode: ?string = null
+    link_preview_options: ?LinkPreviewOptions = null
+    disable_notification: ?bool = null
+    protect_content: ?bool = null
+
+    schema TelegramApi
+        message_thread_id: omit_null
+        parse_mode: omit_null
+        link_preview_options: omit_null
+        disable_notification: omit_null
+        protect_content: omit_null
+    end
+end
+
+struct ~RawResponse
+    status: int
+    body: string
+end
+
+struct Bot
+    token: string
+    info: User
+    debug: bool = false
+    on_update: ?func(Update) -> void = null
+    on_message: ?func(Message) -> void = null
+    on_private_message: ?func(Message) -> void = null
+    on_group_message: ?func(Message) -> void = null
+    on_supergroup_message: ?func(Message) -> void = null
+    ~client: http::Client
+    ~running: bool = false
+
+    func get_me(self: @) -> TelegramError!User
+        let raw = try self.post_raw("/getMe", "{}")
+        let mut diag = json::Diagnostic()
+        let decoded = json::decode[ApiResponse[User]](raw.body, diag) catch e then
+            io::eprintln("telegram: invalid json on /getMe ($e at ${diag.path})")
+            return TelegramError.InvalidResponse
+        end
+        return try unwrap_response(decoded, raw.status, "/getMe")
+    end
+
+    func get_updates(
+        self: @,
+        timeout: int = 30,
+        offset: int = 0,
+        limit: int = 100,
+        allowed_updates: ?[]string = null
+    ) -> TelegramError![]Update
+        let payload = GetUpdatesRequest(
+            offset = if offset > 0 then offset else null end,
+            limit = limit,
+            timeout = timeout,
+            allowed_updates = allowed_updates
+        )
+        let body = json::encode[GetUpdatesRequest, TelegramApi](payload) catch _ then
+            return TelegramError.RequestFailed
+        end
+        let timeout_ms = if timeout > 0 then (timeout + 10) * 1000 else 30000 end
+        let raw = try self.post_raw("/getUpdates", body, timeout_ms = timeout_ms)
+        let mut diag = json::Diagnostic()
+        let decoded = json::decode[ApiResponse[[]Update]](raw.body, diag) catch e then
+            io::eprintln("telegram: invalid json on /getUpdates ($e at ${diag.path})")
+            return TelegramError.InvalidResponse
+        end
+        return try unwrap_response(decoded, raw.status, "/getUpdates")
+    end
+
+    func send_message(
+        self: @,
+        chat_id: int,
+        text: string,
+        message_thread_id: ?int = null,
+        parse_mode: ?string = null,
+        link_preview_options: ?LinkPreviewOptions = null,
+        disable_notification: ?bool = null,
+        protect_content: ?bool = null
+    ) -> TelegramError!Message
+        let payload = SendMessageRequest(
+            chat_id = chat_id,
+            text = text,
+            message_thread_id = message_thread_id,
+            parse_mode = parse_mode,
+            link_preview_options = link_preview_options,
+            disable_notification = disable_notification,
+            protect_content = protect_content
+        )
+        let body = json::encode[SendMessageRequest, TelegramApi](payload) catch _ then
+            return TelegramError.RequestFailed
+        end
+        let raw = try self.post_raw("/sendMessage", body)
+        let mut diag = json::Diagnostic()
+        let decoded = json::decode[ApiResponse[Message]](raw.body, diag) catch e then
+            io::eprintln("telegram: invalid json on /sendMessage ($e at ${diag.path})")
+            return TelegramError.InvalidResponse
+        end
+        return try unwrap_response(decoded, raw.status, "/sendMessage")
+    end
+
+    func process_update(self: @, update: Update) -> void
+        if self.on_update: handler then
+            handler(update)
+        end
+
+        if update.message: message then
+            when message.chat.type
+                "private" then
+                    if self.on_private_message: handler then
+                        handler(message)
+                    end
+                end
+                "group" then
+                    if self.on_group_message: handler then
+                        handler(message)
+                    end
+                end
+                "supergroup" then
+                    if self.on_supergroup_message: handler then
+                        handler(message)
+                    end
+                end
+                else then end
+            end
+
+            if self.on_message: handler then
+                handler(message)
+            end
+        end
+    end
+
+    func run(
+        mut self: @,
+        limit: int = 100,
+        timeout: int = 30,
+        offset: int = 0,
+        allowed_updates: ?[]string = null
+    ) -> void
+        self.running = true
+        let mut next_offset = offset
+
+        for self.running do
+            let updates = self.get_updates(
+                timeout = timeout,
+                offset = next_offset,
+                limit = limit,
+                allowed_updates = allowed_updates
+            ) catch e then
+                io::eprintln("telegram: getUpdates failed ($e)")
+                task::sleep(time::seconds(1))
+                continue
+            end
+
+            for updates: update do
+                self.process_update(update)
+                next_offset = update.update_id + 1
+            end
+
+            if timeout <= 0 then
+                task::sleep(time::milliseconds(0))
+            end
+        end
+    end
+
+    func stop(mut self: @) -> void
+        self.running = false
+    end
+
+    func ~post_raw(self: @, method_path: string, body: string, timeout_ms: int = 30000) -> TelegramError!RawResponse
+        if self.debug then
+            io::println("telegram -> ${method_path}: ${body}")
+        end
+
+        let resp = self.client.request(
+            method_path,
+            method = "POST",
+            body = body,
+            timeout_ms = timeout_ms
+        ) catch e then
+            io::eprintln("telegram: connection error on ${method_path} ($e)")
+            return TelegramError.RequestFailed
+        end
+
+        let raw = resp.text() catch _ then
+            return TelegramError.InvalidResponse
+        end
+
+        if self.debug then
+            io::println("telegram <- ${method_path} [${resp.status}]: ${raw}")
+        end
+
+        return RawResponse(status = resp.status, body = raw)
+    end
+end
+
+func ~unwrap_response[T](decoded: ApiResponse[T], status: int, method_path: string) -> TelegramError!T
+    if !decoded.ok then
+        let code = decoded.error_code orelse status
+        let desc = decoded.description orelse "unknown error"
+        io::eprintln("telegram: API error on ${method_path}: ${desc} [${code}]")
+        return TelegramError.ApiError
+    end
+
+    if decoded.result: value then
+        return value
+    end
+
+    return TelegramError.InvalidResponse
+end
+
+func configure(token: string, debug: bool = false, endpoint: string = DEFAULT_ENDPOINT) -> TelegramError!Bot
+    if string::len(token) == 0 then
+        return TelegramError.InvalidToken
+    end
+
+    let mut client = http::Client(
+        base_url = "${endpoint}${token}",
+        headers = {"Content-Type": http::ContentType.JSON},
+        timeout_ms = 30000
+    )
+
+    let mut bot = Bot(
+        token = token,
+        info = User(id = 0),
+        debug = debug,
+        client = client
+    )
+
+    bot.info = try bot.get_me()
+    return bot
+end
